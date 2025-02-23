@@ -33,9 +33,6 @@ async function runTests() {
   // Search
   console.log("Search Users:", await db.search("users", "name", "Alice"));
 
-  // Aggregate
-  console.log("Sum of Ages:", await db.aggregate("users", "age", "sum"));
-
   // Backup & Restore
   await db.backup("backup.json");
   await db.clearCollection("users");

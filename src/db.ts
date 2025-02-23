@@ -17,15 +17,23 @@ export class Database {
   }
 
   async init() {
-    if (await Bun.file(this.file).exists()) {
-      this.data = JSON.parse(await readFile(this.file, "utf-8"));
-    } else {
-      await this.save();
+    try {
+      if (await Bun.file(this.file).exists()) {
+        this.data = JSON.parse(await readFile(this.file, "utf-8"));
+      } else {
+        await this.save();
+      }
+    } catch (error) {
+      console.error("Failed to initialize database:", error);
     }
   }
 
   private async save() {
-    await writeFile(this.file, JSON.stringify(this.data, null, 2));
+    try {
+      await writeFile(this.file, JSON.stringify(this.data, null, 2));
+    } catch (error) {
+      console.error("Failed to save database:", error);
+    }
   }
 
   private async ensureCollection(collection: string) {
@@ -44,7 +52,7 @@ export class Database {
   async insert<T extends DataItem>(collection: string, item: T) {
     await this.ensureCollection(collection);
     if (this.data[collection].some((existing) => existing.id === item.id)) {
-      throw new Error("Item with the same ID already exists.");
+      throw new Error(`Item with ID ${item.id} already exists.`);
     }
     this.data[collection].push(item);
     await this.save();
@@ -55,19 +63,15 @@ export class Database {
   }
 
   async getById<T>(collection: string, id: number): Promise<T | undefined> {
-    await this.cleanExpiredItems(collection);
-    return this.data[collection]?.find((item) => item.id === id) as T | undefined;
+    return (await this.cleanExpiredItems(collection)).find((item) => (item as DataItem).id === id) as T | undefined;
   }
 
   async update<T>(collection: string, id: number, updatedItem: Partial<T>) {
     await this.ensureCollection(collection);
-    const index = this.data[collection].findIndex((item) => item.id === id);
-    if (index >= 0) {
-      this.data[collection][index] = { ...this.data[collection][index], ...updatedItem };
-      await this.save();
-    } else {
-      throw new Error("Item not found.");
-    }
+    const item = this.data[collection].find((item) => item.id === id);
+    if (!item) throw new Error(`Item with ID ${id} not found`)
+    Object.assign(item, updatedItem)
+    await this.save();
   }
 
   async delete(collection: string, id: number) {
@@ -77,25 +81,17 @@ export class Database {
   }
 
   async clearCollection(collection: string) {
-    await this.ensureCollection(collection);
     this.data[collection] = [];
     await this.save();
   }
 
   async getCount(collection: string): Promise<number> {
-    await this.ensureCollection(collection);
-    return this.data[collection].length;
+    return (await this.cleanExpiredItems(collection)).length;
   }
 
   // Utility Functions
-  async filter<T>(collection: string, predicate: (item: T) => boolean): Promise<T[]> {
-    await this.ensureCollection(collection);
-    return (this.data[collection]?.filter(predicate as unknown as (item: DataItem) => boolean) as unknown) as T[] || [];
-  }
-
   async exists(collection: string, id: number): Promise<boolean> {
-    await this.ensureCollection(collection);
-    return this.data[collection].some((item) => item.id === id);
+    return (await this.cleanExpiredItems(collection)).some((item) => (item as DataItem).id === id);
   }
 
   async paginate<T>(collection: string, page: number, limit: number): Promise<T[]> {
@@ -111,26 +107,25 @@ export class Database {
     return (await this.cleanExpiredItems(collection) as T[]).filter((item) => item[key] === value);
   }
 
-  async aggregate(collection: string, key: string, operation: "sum" | "avg" | "min" | "max"): Promise<number> {
-    const values = (await this.cleanExpiredItems(collection)).map((item) => (item as Record<string, any>)[key]).filter((v) => typeof v === "number");
-    if (values.length === 0) throw new Error("No numeric values found.");
-    return operation === "sum" ? values.reduce((acc, curr) => acc + curr, 0) :
-      operation === "avg" ? values.reduce((acc, curr) => acc + curr, 0) / values.length :
-        operation === "min" ? Math.min(...values) :
-          Math.max(...values);
-  }
-
   // Backup & Restore
   async backup(backupFile: string) {
-    await copyFile(this.file, backupFile);
+    try {
+      await copyFile(this.file, backupFile);
+    } catch (error) {
+      console.log("Failed to create backup:", error);
+    }
   }
 
   async restore(backupFile: string) {
-    if (await Bun.file(backupFile).exists()) {
-      this.data = JSON.parse(await readFile(backupFile, "utf-8"));
-      await this.save();
-    } else {
-      throw new Error("Backup file not found.");
+    try {
+      if (await Bun.file(backupFile).exists()) {
+        this.data = JSON.parse(await readFile(backupFile, "utf-8"));
+        await this.save();
+      } else {
+        throw new Error("Backup file not found.");
+      }
+    } catch (error) {
+      console.log("Failed to restore database:", error);
     }
   }
 
@@ -146,7 +141,7 @@ export class Database {
 
   async rollbackTransaction() {
     if (this.transactionBackup) {
-      this.data = JSON.parse(JSON.stringify(this.transactionBackup));
+      this.data = this.transactionBackup;
       this.transactionBackup = null;
       await this.save();
     }
